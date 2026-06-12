@@ -235,9 +235,17 @@ namespace drachtio {
                 requestUri = buffer ;
                 DR_LOG(log_debug) << "SipDialogController::doSendRequestInsideDialog - defaulting request uri to " << requestUri  ;
 
-                // we need to check if there was a mid-call network handoff, where this client jumped networks
+                // we need to check if there was a mid-call network handoff, where this client jumped networks.
+                // However, if NAT detection has already pinned the in-dialog route to the verified public
+                // source (getRouteUri set it from the source the 2xx actually arrived from), that route and
+                // the transport we used to reach it must win. The cached subscription tport is the client's
+                // registration connection, which may be a different transport (e.g. TCP) and the wrong socket
+                // for this dialog; forcing it here sends the in-dialog request (e.g. the ACK to a 200 OK) out
+                // that leg instead of the NAT route, so it never reaches a natted client and the dialog dies.
+                // Only apply the mid-call handoff override when there is no NAT route in effect.
+                bool haveNatRoute = dlg->getRouteUri( routeUri ) ;
                 std::shared_ptr<UaInvalidData> pData = m_pController->findTportForSubscription( target->m_url->url_user, target->m_url->url_host ) ;
-                if( NULL != pData ) {
+                if( NULL != pData && !haveNatRoute ) {
                     DR_LOG(log_debug) << "SipDialogController::doSendRequestInsideDialog found cached tport for this client " << std::hex << (void *) pData->getTport();
                     //DH: I am now holding a tport that I did not take out a reference for
                     //what if while I am holding it the registration expires and the tport is destroyed?
@@ -246,6 +254,10 @@ namespace drachtio {
                         tp = pData->getTport();
                         forceTport = true ;
                     }
+               }
+               else if( NULL != pData && haveNatRoute ) {
+                    DR_LOG(log_info) << "SipDialogController::doSendRequestInsideDialog NAT route " << routeUri
+                        << " in effect; not overriding transport with cached subscription tport for " << target->m_url->url_host ;
                }
             }
 

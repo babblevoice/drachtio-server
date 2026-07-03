@@ -11,8 +11,11 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
+    # SonarCloud secrets are not exposed to fork (cross-repo) PRs, so the scan
+    # can never authenticate there. Run only on same-repo pushes/PRs.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     env:
-      SONAR_SCANNER_VERSION: 4.6.1.2450 # Find the latest version in the "Linux" link on this page:
+      SONAR_SCANNER_VERSION: 6.2.1.4610 # Find the latest version in the "Linux" link on this page:
       # https://sonarcloud.io/documentation/analysis/scan/sonarscanner/
       SONAR_SERVER_URL: "https://sonarcloud.io"
       BUILD_WRAPPER_OUT_DIR: build_wrapper_output_directory # Directory where build-wrapper output will be placed
@@ -21,11 +24,11 @@ jobs:
         with:
           fetch-depth: 0 # Shallow clones should be disabled for a better relevancy of analysis
           submodules: recursive
-      - name: Set up JDK 11
+      - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: 11
+          java-version: 17
       - name: Cache SonarCloud packages
         uses: actions/cache@v6
         with:
@@ -34,12 +37,12 @@ jobs:
           restore-keys: ${{ runner.os }}-sonar
       - name: Download and set up sonar-scanner
         env:
-          SONAR_SCANNER_DOWNLOAD_URL: https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${{ env.SONAR_SCANNER_VERSION }}-linux.zip
+          SONAR_SCANNER_DOWNLOAD_URL: https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${{ env.SONAR_SCANNER_VERSION }}-linux-x64.zip
         run: |
           mkdir -p $HOME/.sonar
           curl -sSLo $HOME/.sonar/sonar-scanner.zip ${{ env.SONAR_SCANNER_DOWNLOAD_URL }}
           unzip -o $HOME/.sonar/sonar-scanner.zip -d $HOME/.sonar/
-          echo "$HOME/.sonar/sonar-scanner-${{ env.SONAR_SCANNER_VERSION }}-linux/bin" >> $GITHUB_PATH
+          echo "$HOME/.sonar/sonar-scanner-${{ env.SONAR_SCANNER_VERSION }}-linux-x64/bin" >> $GITHUB_PATH
       - name: Download and set up build-wrapper
         env:
           BUILD_WRAPPER_DOWNLOAD_URL: ${{ env.SONAR_SERVER_URL }}/static/cpp/build-wrapper-linux-x86.zip

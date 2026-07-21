@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: checkout repo
-        uses: actions/checkout@v2
+        uses: actions/checkout@v7
         with:
           submodules: recursive
       - name: build dependencies
@@ -31,13 +31,24 @@ jobs:
           ../configure --enable-tcmalloc=yes
           make
           sudo make install
-      - name: install nodejs 
-        uses: actions/setup-node@v1
+      - name: install nodejs
+        uses: actions/setup-node@v6
         with:
-          node-version: 12
+          node-version: 24
       - name: run ci tests
         run: |
           cd test
-          npm install 
+          npm install
           npm run test-ci
-          cat /tmp/drachtio.log
+      - name: dump drachtio log
+        if: always()
+        run: |
+          if [ -f /tmp/drachtio.log ]; then cat /tmp/drachtio.log; fi
+      - name: upload per-fixture drachtio logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: drachtio-fixture-logs
+          path: /tmp/drachtio-fixture-*.log
+          if-no-files-found: ignore
+          retention-days: 7

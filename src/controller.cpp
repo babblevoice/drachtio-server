@@ -29,6 +29,10 @@ THE SOFTWARE.
 #include <functional>
 #include <regex>
 #include <cstdlib>
+#include <cstring>
+#include <chrono>
+#include <netdb.h>
+#include <arpa/inet.h>
 
 #include <prometheus/exposer.h>
 #include <prometheus/registry.h>
@@ -1182,8 +1186,10 @@ namespace drachtio {
         unsigned int hepVersion;
         unsigned int capturePort ;
         if (!m_strHomerAddress.empty()) {
-            captureString = "udp:" + m_strHomerAddress + ":" + boost::lexical_cast<std::string>(m_nHomerPort) + 
+            m_strCaptureHost = m_strHomerAddress;
+            m_strCaptureTail = ":" + boost::lexical_cast<std::string>(m_nHomerPort) + 
                 ";hep=3;capture_id=" + boost::lexical_cast<std::string>(m_nHomerId);
+            captureString = "udp:" + m_strCaptureHost + m_strCaptureTail;
             DR_LOG(log_notice) << "DrachtioController::run - sipcapture/Homer enabled: " << captureString;            
         }
         else if (m_Config->getCaptureServer(captureServer, capturePort, captureId, hepVersion)) {
@@ -1192,13 +1198,23 @@ namespace drachtio {
                     "; must be between 1 and 3 inclusive";
             }
             else {
-                captureString = "udp:" + captureServer + ":" + boost::lexical_cast<std::string>(capturePort) + 
+                m_strCaptureHost = captureServer;
+                m_strCaptureTail = ":" + boost::lexical_cast<std::string>(capturePort) + 
                     ";hep=" + boost::lexical_cast<std::string>(hepVersion) +
                     ";capture_id=" + boost::lexical_cast<std::string>(captureId);
+                captureString = "udp:" + m_strCaptureHost + m_strCaptureTail;
                 DR_LOG(log_notice) << "DrachtioController::run - sipcapture/Homer enabled: " << captureString;
             }
 
         }
+
+        /* Remember it: sofia resolves the capture address once, in
+           tport_open_log, and if that fails (collector not up / not resolvable
+           yet) mr_capt_sock is never created and this process captures nothing
+           for the rest of its life - while still having logged "Homer enabled"
+           above. The watchdog re-applies this so we recover on our own. */
+        m_strCaptureString = captureString;
+        startCaptureResolver();
 
         if (m_strUserAgentAutoAnswerOptions.empty()) {
              m_Config->getAutoAnswerOptionsUserAgent(m_strUserAgentAutoAnswerOptions);
@@ -2245,9 +2261,100 @@ namespace drachtio {
        STATS_GAUGE_SET(STATS_GAUGE_REGISTERED_ENDPOINTS, m_mapUri2InvalidData.size());
 
     }
+    /* The first IPv4 address a host resolves to, or empty if it does not. An
+       address literal comes straight back without a lookup. */
+    static string resolveCaptureHost(const string& host) {
+        struct addrinfo hints;
+        struct addrinfo* res = nullptr;
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_DGRAM;
+        if (0 != getaddrinfo(host.c_str(), nullptr, &hints, &res) || nullptr == res) return "";
+
+        char buf[INET_ADDRSTRLEN] = {0};
+        const struct sockaddr_in* sin = reinterpret_cast<const struct sockaddr_in*>(res->ai_addr);
+        const char* ok = inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf));
+        freeaddrinfo(res);
+        return ok ? string(buf) : "";
+    }
+
+    /* Keep the capture host's address current.
+
+       sofia resolves the capture host once, when it opens the socket, and then
+       sends to that address for as long as the socket stays open - a UDP
+       socket never notices the far end has gone. That is fine for a service
+       VIP, which survives a redeploy, but not for a per-task address: a
+       babble-sip capture gate is reached by its task hostname, every redeploy
+       gives the task a new IP, and capture would go on silently to the old one
+       until drachtio itself restarted - which drops every call.
+
+       So look the host up again every 10 seconds, on a thread of its own so a
+       slow or dead DNS server can never stall SIP, and let the watchdog re-arm
+       capture when the address changes. If the host never resolves to an IPv4
+       address this changes nothing: the watchdog keeps re-applying the string
+       as configured, as before. The controller lives for the life of the
+       process, so the thread is simply detached. */
+    void DrachtioController::startCaptureResolver() {
+        if (m_strCaptureHost.empty()) return;
+
+        std::thread([this]() {
+            for (;;) {
+                string ip = resolveCaptureHost(m_strCaptureHost);
+                if (!ip.empty()) {
+                    std::lock_guard<std::mutex> lock(m_captureMutex);
+                    m_strCaptureResolvedIp = ip;
+                }
+                std::this_thread::sleep_for(std::chrono::seconds(10));
+            }
+        }).detach();
+    }
+
     void DrachtioController::processWatchdogTimer() {
         DR_LOG(log_debug) << "DrachtioController::processWatchdogTimer"  ;
-    
+
+        /* Re-arm HEP capture if it is not currently running.
+
+           sofia resolves the capture server and connects its UDP socket once,
+           when the tport master is created. If the collector was not
+           resolvable at that moment - we started before it did, or it was
+           being redeployed - the socket is never opened and no packet is ever
+           captured again, silently. Re-applying TPTAG_CAPT runs
+           tport_open_log() again, which re-resolves and reopens the socket.
+
+           When capture is healthy this is free: tport_open_log() returns
+           immediately if the socket is already open and the string is
+           unchanged, so there is no DNS lookup and no socket churn. Nothing
+           else is disturbed either: agent_set_params/tport_set_params both
+           seed every other parameter from the current value before applying
+           tags, so passing TPTAG_CAPT alone leaves them as they were.
+
+           Safe to call from here: the watchdog runs on su_root_task(m_root),
+           the same thread that owns the sofia stack.
+
+           Restarting drachtio would also fix it, but that drops every call in
+           progress, so it is not an option. */
+        if (!m_strCaptureString.empty() && m_nta) {
+            /* Follow the capture host if its address has changed. Resolving
+               happens on the resolver thread; here we only compare strings. A
+               different string makes tport_open_log close the old socket and
+               connect a new one, and because it is an address literal that
+               involves no DNS on this thread. */
+            string ip;
+            {
+                std::lock_guard<std::mutex> lock(m_captureMutex);
+                ip = m_strCaptureResolvedIp;
+            }
+            if (!ip.empty()) {
+                string current = "udp:" + ip + m_strCaptureTail;
+                if (current != m_strCaptureString) {
+                    DR_LOG(log_notice) << "DrachtioController::processWatchdogTimer - capture host " << m_strCaptureHost <<
+                        " resolves to " << ip << ", capturing to " << current;
+                    m_strCaptureString = current;
+                }
+            }
+            nta_agent_set_params(m_nta, TPTAG_CAPT(m_strCaptureString.c_str()), TAG_END()) ;
+        }
+
         // expire any UaInvalidData
         for(  mapUri2InvalidData::iterator it = m_mapUri2InvalidData.begin(); it != m_mapUri2InvalidData.end(); ) {
             std::shared_ptr<UaInvalidData> p = it->second ;

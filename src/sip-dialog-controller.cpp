@@ -2137,6 +2137,7 @@ namespace drachtio {
     bool TimerDHandler::resendIfNeeded(nta_outgoing_t* invite) {
         mapInvite2Ack::const_iterator it = m_mapInvite2Ack.find(invite);
         if (it != m_mapInvite2Ack.end()) {
+            DR_LOG(log_debug) << "TimerDHandler::resendIfNeeded - retransmitting ACK;  invite orq " << invite << " ack orq " << it->second;
             outgoing_retransmit(it->second) ;
             return true;
         }

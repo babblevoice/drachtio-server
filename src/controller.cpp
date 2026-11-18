@@ -2290,10 +2290,12 @@ namespace drachtio {
 
        So look the host up again every 10 seconds, on a thread of its own so a
        slow or dead DNS server can never stall SIP, and let the watchdog re-arm
-       capture when the address changes. If the host never resolves to an IPv4
-       address this changes nothing: the watchdog keeps re-applying the string
-       as configured, as before. The controller lives for the life of the
-       process, so the thread is simply detached. */
+       capture when the address changes. The watchdog also re-arms capture
+       from here when the host was not resolvable at startup, as soon as it
+       is. If the host never resolves to an IPv4 address this changes
+       nothing: capture stays as sofia set it up at startup, as before. The
+       controller lives for the life of the process, so the thread is simply
+       detached. */
     void DrachtioController::startCaptureResolver() {
         if (m_strCaptureHost.empty()) return;
 
@@ -2319,7 +2321,9 @@ namespace drachtio {
            resolvable at that moment - we started before it did, or it was
            being redeployed - the socket is never opened and no packet is ever
            captured again, silently. Re-applying TPTAG_CAPT runs
-           tport_open_log() again, which re-resolves and reopens the socket.
+           tport_open_log() again, which reopens the socket. It is re-applied
+           with the address the resolver thread found, never the hostname, so
+           this thread does no DNS lookup.
 
            When capture is healthy this is free: tport_open_log() returns
            immediately if the socket is already open and the string is
@@ -2344,6 +2348,12 @@ namespace drachtio {
                 std::lock_guard<std::mutex> lock(m_captureMutex);
                 ip = m_strCaptureResolvedIp;
             }
+            /* Only ever hand sofia an address literal. With no socket open,
+               tport_open_log resolves whatever host it is given with a
+               synchronous su_getaddrinfo on this thread, so re-applying the
+               configured hostname would stall SIP for the resolver timeout on
+               every tick while DNS is slow or down. Until the resolver thread
+               has an address, capture stays as sofia set it up at startup. */
             if (!ip.empty()) {
                 string current = "udp:" + ip + m_strCaptureTail;
                 if (current != m_strCaptureString) {
@@ -2351,8 +2361,8 @@ namespace drachtio {
                         " resolves to " << ip << ", capturing to " << current;
                     m_strCaptureString = current;
                 }
+                nta_agent_set_params(m_nta, TPTAG_CAPT(m_strCaptureString.c_str()), TAG_END()) ;
             }
-            nta_agent_set_params(m_nta, TPTAG_CAPT(m_strCaptureString.c_str()), TAG_END()) ;
         }
 
         // expire any UaInvalidData

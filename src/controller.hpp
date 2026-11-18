@@ -236,8 +236,9 @@ namespace drachtio {
     string m_strHomerAddress;
     unsigned int m_nHomerPort;
     uint32_t m_nHomerId;
-    /* the assembled TPTAG_CAPT string, kept so the watchdog can re-apply it and
-       recover a capture socket that was never opened (see processWatchdogTimer) */
+    /* the TPTAG_CAPT string last given to sofia: as configured at startup, then
+       with the address the resolver thread found, which the watchdog re-applies
+       to recover a capture socket that was never opened (see processWatchdogTimer) */
     string m_strCaptureString;
     /* the capture host as configured, everything after it in the capture string
        (":port;hep=N;capture_id=N"), and what the host last resolved to - so the

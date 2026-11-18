@@ -154,6 +154,7 @@ namespace drachtio {
 
     void printStats(bool bDetail) ;
     void processWatchdogTimer(void) ;
+    void startCaptureResolver(void) ;
 
     const tport_t* getTportForProtocol( const string& remoteHost, const char* proto ) ;
 
@@ -235,6 +236,17 @@ namespace drachtio {
     string m_strHomerAddress;
     unsigned int m_nHomerPort;
     uint32_t m_nHomerId;
+    /* the TPTAG_CAPT string last given to sofia: as configured at startup, then
+       with the address the resolver thread found, which the watchdog re-applies
+       to recover a capture socket that was never opened (see processWatchdogTimer) */
+    string m_strCaptureString;
+    /* the capture host as configured, everything after it in the capture string
+       (":port;hep=N;capture_id=N"), and what the host last resolved to - so the
+       watchdog can follow a host whose address changes (see startCaptureResolver) */
+    string m_strCaptureHost;
+    string m_strCaptureTail;
+    string m_strCaptureResolvedIp;
+    std::mutex m_captureMutex;
     string m_secret;
     string m_adminAddress;
     string m_redisAddress;
